@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#1a1712" />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("cineverse-theme");
+          var isLight = stored === "light";
+          document.documentElement.classList.toggle("light", isLight);
+          document.documentElement.classList.toggle("dark", !isLight);
+          // Note: color-scheme is set purely via the .light/.dark CSS rules
+          // (see index.css) — deliberately not set inline here. An inline
+          // style would outrank any later non-!important class rule and go
+          // stale the moment the user toggles theme again, leaving native
+          // controls (scrollbars, form fields) stuck on the wrong scheme.
+        } catch (e) {
+          /* localStorage unavailable — keep the default dark class */
+        }
+      })();
+    </script>
+    <title>CineVerse — A cinephile's film archive</title>
+    <meta
+      name="description"
+      content="Discover, track and collect films. Curated rails, deep credits, franchise sagas and a personal library."
+    />
+    <meta property="og:title" content="CineVerse — A cinephile's film archive" />
+    <meta
+      property="og:description"
+      content="Discover, track and collect films with real credits, collections and ratings."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" type="image/x-icon" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..800;1,400..700&family=Archivo:wght@300..700&family=JetBrains+Mono:wght@400;500&display=swap"
+    />
+  </head>
+  <body class="film-grain">
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+  </body>
+</html>
