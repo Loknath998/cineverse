@@ -84,17 +84,45 @@ const GUEST_KEY = "cineverse.library.v1.guest";
 const legacyKey = () => "cineverse.library.v1"; // pre-accounts key, migrated once below
 const keyFor = (userId: string | null) => (userId ? `cineverse.library.v1.user.${userId}` : GUEST_KEY);
 
+export function isCorruptedEntry(entry: { title?: string } | undefined | null): boolean {
+  if (!entry || typeof entry !== "object") return true;
+  const title = (entry.title || "").trim();
+  if (!title) return true;
+  const lower = title.toLowerCase();
+  if (
+    lower.startsWith("date,name") ||
+    lower.startsWith("name,year") ||
+    lower.startsWith("date,") ||
+    lower.startsWith("name,") ||
+    lower.startsWith("date\tname")
+  ) {
+    return true;
+  }
+  if (title.includes("https://boxd.it") || title.includes("letterboxd.com") || title.includes("http://")) {
+    return true;
+  }
+  if (title.includes(",") && (/\b\d{4}-\d{2}-\d{2}\b/.test(title) || (title.match(/,/g) || []).length >= 3)) {
+    return true;
+  }
+  return false;
+}
+
 function readLocal(key: string): State {
   try {
     const raw = localStorage.getItem(key);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<State>;
-      const diary = parsed.diary && Array.isArray(parsed.diary) ? parsed.diary : [];
-      // If diary is empty but watched has entries, seed diary from watched
+      const rawDiary = parsed.diary && Array.isArray(parsed.diary) ? parsed.diary : [];
+      const cleanDiary = rawDiary.filter((e) => !isCorruptedEntry(e));
+      const cleanWatched = (parsed.watched ?? []).filter((w) => !isCorruptedEntry(w));
+      const cleanWatchlist = (parsed.watchlist ?? []).filter((w) => !isCorruptedEntry(w));
+      const cleanFavorites = (parsed.favorites ?? []).filter((f) => !isCorruptedEntry(f));
+      const cleanActivity = (parsed.activity ?? []).filter((a) => !isCorruptedEntry(a));
+
       const initialDiary =
-        diary.length > 0
-          ? diary
-          : (parsed.watched ?? []).map((w) => ({
+        cleanDiary.length > 0
+          ? cleanDiary
+          : cleanWatched.map((w) => ({
               id: `seed-${w.id}-${w.addedAt}`,
               movieId: w.id,
               title: w.title,
@@ -110,6 +138,10 @@ function readLocal(key: string): State {
       return {
         ...EMPTY,
         ...parsed,
+        watched: cleanWatched,
+        watchlist: cleanWatchlist,
+        favorites: cleanFavorites,
+        activity: cleanActivity,
         diary: initialDiary,
         profile: { ...DEFAULT_PROFILE, ...(parsed.profile ?? {}) },
       };
@@ -158,7 +190,8 @@ type Ctx = Omit<State, "profile"> & {
     review?: string;
   }) => void;
   removeDiaryEntry: (id: string) => void;
-  importLetterboxdCsv: (csvText: string) => number;
+  importLetterboxdCsv: (input: string | any[]) => number;
+  clearCorruptedEntries: () => void;
   remove: (list: "watchlist" | "favorites" | "watched", ids: number[]) => void;
   reorderFavorites: (ids: number[]) => void;
   saveProfile: (next: Partial<Profile>) => void;
@@ -224,10 +257,19 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       if (result.data && typeof result.data === "object") {
         skipNextPush.current = true;
         const remote = result.data as Partial<State>;
+        const cleanDiary = (remote.diary ?? []).filter((e: any) => !isCorruptedEntry(e));
+        const cleanWatched = (remote.watched ?? []).filter((w: any) => !isCorruptedEntry(w));
+        const cleanWatchlist = (remote.watchlist ?? []).filter((w: any) => !isCorruptedEntry(w));
+        const cleanFavorites = (remote.favorites ?? []).filter((f: any) => !isCorruptedEntry(f));
+        const cleanActivity = (remote.activity ?? []).filter((a: any) => !isCorruptedEntry(a));
         setState({
           ...EMPTY,
           ...remote,
-          diary: remote.diary ?? [],
+          diary: cleanDiary,
+          watched: cleanWatched,
+          watchlist: cleanWatchlist,
+          favorites: cleanFavorites,
+          activity: cleanActivity,
           profile: { ...DEFAULT_PROFILE, ...(remote.profile ?? {}) },
         });
       } else {
@@ -413,46 +455,107 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
-  const importLetterboxdCsv = useCallback((csvText: string): number => {
+  const importLetterboxdCsv = useCallback((input: string | any[]): number => {
     try {
-      const lines = csvText.split(/\r?\n/).filter((l) => l.trim());
-      if (lines.length < 2) return 0;
-      const headers = lines[0].split(",").map((h) => h.trim().toLowerCase().replace(/["']/g, ""));
-      const dateIdx = headers.indexOf("date") !== -1 ? headers.indexOf("date") : headers.indexOf("watched date");
-      const nameIdx = headers.indexOf("name");
-      const yearIdx = headers.indexOf("year");
-      const ratingIdx = headers.indexOf("rating");
-      const rewatchIdx = headers.indexOf("rewatch");
+      let items: any[] = [];
+      if (Array.isArray(input)) {
+        items = input;
+      } else if (typeof input === "string") {
+        const clean = input.replace(/^\uFEFF/, "").trim();
+        const lines = clean.split(/\r\n|\n|\r/).filter((l) => l.trim().length > 0);
+        if (lines.length >= 1) {
+          const parseLine = (line: string): string[] => {
+            const cols: string[] = [];
+            let cur = "";
+            let inQuotes = false;
+            for (let i = 0; i < line.length; i++) {
+              const c = line[i];
+              if (c === '"') {
+                if (inQuotes && line[i + 1] === '"') {
+                  cur += '"';
+                  i++;
+                } else {
+                  inQuotes = !inQuotes;
+                }
+              } else if (c === "," && !inQuotes) {
+                cols.push(cur.trim().replace(/^"|"$/g, ""));
+                cur = "";
+              } else {
+                cur += c;
+              }
+            }
+            cols.push(cur.trim().replace(/^"|"$/g, ""));
+            return cols;
+          };
 
-      if (nameIdx === -1) return 0;
+          const firstCols = parseLine(lines[0]);
+          const normHeaders = firstCols.map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
+          let nameIdx = normHeaders.findIndex((h) => ["name", "title", "film", "movie"].includes(h));
+          let yearIdx = normHeaders.findIndex((h) => ["year", "releaseyear"].includes(h));
+          let ratingIdx = normHeaders.findIndex((h) => ["rating", "yourrating"].includes(h));
+          let dateIdx = normHeaders.indexOf("watcheddate");
+          if (dateIdx === -1) dateIdx = normHeaders.indexOf("date");
+          let rewatchIdx = normHeaders.findIndex((h) => ["rewatch"].includes(h));
+          let startRow = 1;
+
+          if (nameIdx === -1) {
+            if (firstCols.length >= 2) {
+              nameIdx = /^\d{4}-\d{2}-\d{2}$/.test(firstCols[0]) ? 1 : 0;
+              yearIdx = nameIdx === 1 ? 2 : 1;
+              ratingIdx = 4;
+              dateIdx = 0;
+              startRow = 0;
+            } else {
+              nameIdx = 0;
+              yearIdx = 1;
+              startRow = 0;
+            }
+          }
+
+          for (let i = startRow; i < lines.length; i++) {
+            const row = parseLine(lines[i]);
+            const title = (row[nameIdx] || "").trim();
+            if (!title || title.toLowerCase() === "name" || title.toLowerCase() === "title") continue;
+            const year = yearIdx !== -1 && row[yearIdx] ? row[yearIdx].trim() : "—";
+            const date = dateIdx !== -1 && row[dateIdx] ? row[dateIdx].trim() : new Date().toISOString().slice(0, 10);
+            const ratingRaw = ratingIdx !== -1 && row[ratingIdx] ? parseFloat(row[ratingIdx]) : NaN;
+            const rating = !isNaN(ratingRaw) && ratingRaw > 0 ? Math.min(10, Math.round(ratingRaw <= 5 ? ratingRaw * 2 : ratingRaw)) : undefined;
+            const rewatch = rewatchIdx !== -1 && ["yes", "true", "1", "rewatch"].includes((row[rewatchIdx] || "").toLowerCase().trim());
+            items.push({ name: title, title, year, date, rating, rewatch });
+          }
+        }
+      }
+
+      console.log("[Letterboxd Import] Parsed entries:", items);
+
+      if (!items.length) return 0;
 
       let importedCount = 0;
       const newDiaryEntries: DiaryEntry[] = [];
       const newWatched: LibraryEntry[] = [];
       const newRatings: Record<number, number> = {};
 
-      for (let i = 1; i < lines.length; i++) {
-        // basic CSV quote-aware split
-        const row = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map((col) => col.trim().replace(/^"|"$/g, ""));
-        const title = row[nameIdx];
-        if (!title) continue;
-        const year = yearIdx !== -1 && row[yearIdx] ? row[yearIdx] : "—";
-        const date = dateIdx !== -1 && row[dateIdx] ? row[dateIdx] : new Date().toISOString().slice(0, 10);
-        const ratingRaw = ratingIdx !== -1 ? parseFloat(row[ratingIdx]) : NaN;
-        // Letterboxd uses 0.5-5.0 scale, CineVerse uses 1-10
-        const rating = !isNaN(ratingRaw) ? Math.min(10, Math.round(ratingRaw * 2)) : undefined;
-        const rewatch = rewatchIdx !== -1 && ["yes", "true", "1"].includes((row[rewatchIdx] || "").toLowerCase());
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const title = (item.name || item.title || "").trim();
+        if (!title || isCorruptedEntry({ title })) continue;
 
-        // Use a deterministic pseudo-id based on title + year
-        const syntheticId = Math.abs(
-          title.split("").reduce((acc, char) => (acc << 5) - acc + char.charCodeAt(0), 0),
-        );
+        const movieId =
+          item.tmdbId ||
+          item.id ||
+          Math.abs(title.split("").reduce((acc: number, char: string) => (acc << 5) - acc + char.charCodeAt(0), 0));
+
+        const poster = item.poster || item.posterPath || null;
+        const year = item.year || "—";
+        const date = item.date || item.watchedDate || new Date().toISOString().slice(0, 10);
+        const rating = item.rating;
+        const rewatch = Boolean(item.rewatch);
 
         newDiaryEntries.push({
           id: `lb-${Date.now()}-${i}`,
-          movieId: syntheticId,
+          movieId,
           title,
-          poster: null,
+          poster,
           year,
           watchedDate: date,
           rating,
@@ -461,31 +564,51 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         });
 
         newWatched.push({
-          id: syntheticId,
+          id: movieId,
           title,
-          poster: null,
+          poster,
           year,
           rating: rating ?? 0,
           addedAt: Date.now(),
         });
 
-        if (rating) newRatings[syntheticId] = rating;
+        if (rating) newRatings[movieId] = rating;
         importedCount++;
       }
 
       if (importedCount > 0) {
-        setState((prev) => ({
-          ...prev,
-          diary: [...newDiaryEntries, ...prev.diary],
-          watched: [...newWatched, ...prev.watched],
-          ratings: { ...prev.ratings, ...newRatings },
-        }));
+        setState((prev) => {
+          const importedTitles = new Set(newDiaryEntries.map((e) => e.title.toLowerCase().trim()));
+          const existingDiary = prev.diary.filter((e) => !importedTitles.has(e.title.toLowerCase().trim()));
+
+          const importedMovieIds = new Set(newWatched.map((w) => w.id));
+          const existingWatched = prev.watched.filter((w) => !importedMovieIds.has(w.id));
+
+          return {
+            ...prev,
+            diary: [...newDiaryEntries, ...existingDiary],
+            watched: [...newWatched, ...existingWatched],
+            ratings: { ...prev.ratings, ...newRatings },
+          };
+        });
       }
 
       return importedCount;
-    } catch {
+    } catch (err) {
+      console.error("[Letterboxd Import] Error importing CSV:", err);
       return 0;
     }
+  }, []);
+
+  const clearCorruptedEntries = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      diary: prev.diary.filter((e) => !isCorruptedEntry(e)),
+      watched: prev.watched.filter((w) => !isCorruptedEntry(w)),
+      watchlist: prev.watchlist.filter((w) => !isCorruptedEntry(w)),
+      favorites: prev.favorites.filter((f) => !isCorruptedEntry(f)),
+      activity: prev.activity.filter((a) => !isCorruptedEntry(a)),
+    }));
   }, []);
 
   const remove = useCallback<Ctx["remove"]>((list, ids) => {
@@ -519,6 +642,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       logToDiary,
       removeDiaryEntry,
       importLetterboxdCsv,
+      clearCorruptedEntries,
       remove,
       reorderFavorites,
       saveProfile,
@@ -537,6 +661,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       logToDiary,
       removeDiaryEntry,
       importLetterboxdCsv,
+      clearCorruptedEntries,
       remove,
       reorderFavorites,
       saveProfile,

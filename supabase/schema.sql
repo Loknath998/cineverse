@@ -20,25 +20,43 @@ create table if not exists public.user_data (
 comment on table public.user_data is
   'One row per user: their CineVerse watchlist/watched/favourites/ratings/notes/activity/profile as a single JSON document.';
 
+-- Enable Row Level Security (RLS)
 alter table public.user_data enable row level security;
 
+-- ─────────────────────────────────────────────────────────────
+-- GRANTS: Essential to fix "permission denied for table user_data"
+-- Supabase roles (authenticated, anon, service_role) must have explicit
+-- table permissions in addition to RLS policies.
+-- ─────────────────────────────────────────────────────────────
+grant usage on schema public to postgres, anon, authenticated, service_role;
+grant all on table public.user_data to postgres, service_role;
+grant select, insert, update, delete on table public.user_data to authenticated;
+grant select, insert, update, delete on table public.user_data to anon;
+
+-- ─────────────────────────────────────────────────────────────
+-- RLS POLICIES: User isolation (users can only access their own row)
+-- ─────────────────────────────────────────────────────────────
 drop policy if exists "Users can view their own data" on public.user_data;
 create policy "Users can view their own data"
   on public.user_data for select
+  to authenticated
   using (auth.uid() = user_id);
 
 drop policy if exists "Users can insert their own data" on public.user_data;
 create policy "Users can insert their own data"
   on public.user_data for insert
+  to authenticated
   with check (auth.uid() = user_id);
 
 drop policy if exists "Users can update their own data" on public.user_data;
 create policy "Users can update their own data"
   on public.user_data for update
+  to authenticated
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
 drop policy if exists "Users can delete their own data" on public.user_data;
 create policy "Users can delete their own data"
   on public.user_data for delete
+  to authenticated
   using (auth.uid() = user_id);

@@ -2,14 +2,62 @@ import { createRoute } from "../lib/route";
 import { Link } from "../lib/router";
 
 import { MovieActions } from "../components/site/movie-actions";
-import { SectionHeader } from "../components/site/media";
+import { SectionHeader, PosterPlaceholder } from "../components/site/media";
 import { getCollection } from "../lib/tmdb.api";
 import { fmtRuntime } from "../lib/tmdb-map";
 import type { MovieCard } from "../lib/tmdb-map";
+import { CURATED_ARCHIVES } from "./collections.index";
 
 export const Route = createRoute({
   path: "/collections/$id",
-  loader: ({ params }) => getCollection({ data: { id: Number(params.id) } }),
+  loader: async ({ params }): Promise<any> => {
+    const rawId = params.id;
+    const numId = Number(rawId);
+
+    // 1. Check curated archives first (matches slugs or predefined collections)
+    const curated = CURATED_ARCHIVES.find((a) => String(a.id) === String(rawId));
+    if (curated && curated.films && curated.films.length > 0) {
+      return {
+        id: typeof curated.id === "number" ? curated.id : 999999,
+        name: curated.name,
+        overview: curated.overview,
+        backdrop: curated.backdrop,
+        poster: curated.poster,
+        parts: curated.films,
+        runtime: curated.films.reduce((s, f) => s + (f.runtime ?? 120), 0),
+        average:
+          Math.round(
+            (curated.films.reduce((s, f) => s + (f.rating ?? 8.0), 0) / curated.films.length) * 10,
+          ) / 10,
+      };
+    }
+
+    // 2. If it's a numeric ID, fetch live collection from TMDB
+    if (!isNaN(numId) && numId > 0) {
+      try {
+        const tmdbData = await getCollection({ data: { id: numId } });
+        if (tmdbData && tmdbData.parts) return tmdbData;
+      } catch (err) {
+        console.warn("[CineVerse] TMDB collection fetch failed, checking fallback:", err);
+      }
+    }
+
+    // 3. Fallback to curated metadata
+    if (curated) {
+      return {
+        id: typeof curated.id === "number" ? curated.id : 999999,
+        name: curated.name,
+        overview: curated.overview,
+        backdrop: curated.backdrop,
+        poster: curated.poster,
+        parts: curated.films || [],
+        runtime: 0,
+        average: 8.5,
+      };
+    }
+
+    return null;
+  },
   head: ({ loaderData }) => {
     if (!loaderData) {
       return {
@@ -21,8 +69,8 @@ export const Route = createRoute({
     }
     const title = `${loaderData.name} — CineVerse Collections`;
     const description =
-      loaderData.overview.slice(0, 155) ||
-      `All ${loaderData.parts.length} films in ${loaderData.name}, in release order.`;
+      loaderData.overview?.slice(0, 155) ||
+      `All ${loaderData.parts?.length ?? 0} films in ${loaderData.name}, in release order.`;
     return {
       meta: [
         { title },
@@ -42,7 +90,19 @@ export const Route = createRoute({
 });
 
 function CollectionDetail() {
-  const c = Route.useLoaderData() as Awaited<ReturnType<typeof getCollection>>;
+  const c = Route.useLoaderData() as Awaited<ReturnType<typeof getCollection>> | null;
+
+  if (!c) {
+    return (
+      <div className="mx-auto max-w-[1400px] px-4 py-24 text-center sm:px-8">
+        <h1 className="font-display text-3xl font-bold text-foreground">Archive Unavailable</h1>
+        <p className="mt-2 text-sm text-muted-foreground">The requested film collection could not be loaded.</p>
+        <div className="mt-6">
+          <Link to="/collections" className="label-gold hover:text-gold">← Return to All Collections</Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -88,7 +148,7 @@ function CollectionDetail() {
               <Link
                 to="/movie/$id"
                 params={{ id: String(m.id) }}
-                className="block w-20 overflow-hidden rounded-xl ring-1 ring-border/60 sm:w-full"
+                className="block w-20 overflow-hidden rounded-xl ring-1 ring-border/60 sm:w-full aspect-[2/3] bg-surface-2"
               >
                 {m.poster ? (
                   <img
@@ -97,7 +157,9 @@ function CollectionDetail() {
                     loading="lazy"
                     className="size-full object-cover"
                   />
-                ) : null}
+                ) : (
+                  <PosterPlaceholder title={m.title} year={m.year} genre={m.genres?.[0] ?? m.director} />
+                )}
               </Link>
               <div>
                 <div className="flex flex-wrap items-baseline gap-3">

@@ -98,8 +98,12 @@ export type PersonDetail = {
 };
 
 export const IMG = "https://image.tmdb.org/t/p";
-export const img = (path: string | null | undefined, size = "w500") =>
-  path ? `${IMG}/${size}${path}` : null;
+export const img = (path: string | null | undefined, size = "w500") => {
+  if (!path || typeof path !== "string" || path.trim() === "") return null;
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  return `${IMG}/${size}${cleanPath}`;
+};
 
 type RawMovie = {
   id: number;

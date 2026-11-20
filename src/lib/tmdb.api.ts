@@ -24,6 +24,13 @@ function uniqueMappedMovies(items: any[]): MovieCard[] {
   return uniqueMovies(items.filter((m) => m && m.id)).map(mapMovie);
 }
 
+function prioritizeWithPosters(items: any[], limit = 18): MovieCard[] {
+  const mapped = (items || []).filter((m) => m && m.id).map(mapMovie);
+  const withPosters = mapped.filter((m) => m.poster);
+  const withoutPosters = mapped.filter((m) => !m.poster);
+  return uniqueMovies([...withPosters, ...withoutPosters]).slice(0, limit);
+}
+
 export type CinemaPathway = {
   id: string;
   title: string;
@@ -53,23 +60,52 @@ export const getHome = defineApi({ method: "GET" }).handler(async (): Promise<{
   rails: Rail[];
   moods: { id: number; name: string; backdrop: string | null }[];
 }> => {
-  const [trending, nowPlaying, topRated, classics, popular, tamil] = await Promise.all([
+  const [
+    trending,
+    nowPlaying,
+    nowPlayingP2,
+    topRated,
+    topRatedP2,
+    classics,
+    classicsP2,
+    popular,
+    popularP2,
+    tamil,
+    tamilP2,
+  ] = await Promise.all([
     tmdb<List<any>>("/trending/movie/week"),
     tmdb<List<any>>("/movie/now_playing", { page: 1 }),
+    tmdb<List<any>>("/movie/now_playing", { page: 2 }).catch(() => ({ results: [] })),
     tmdb<List<any>>("/movie/top_rated", { page: 1 }),
+    tmdb<List<any>>("/movie/top_rated", { page: 2 }).catch(() => ({ results: [] })),
     tmdb<List<any>>("/discover/movie", {
       "primary_release_date.lte": "1985-12-31",
       sort_by: "vote_average.desc",
-      "vote_count.gte": 800,
+      "vote_count.gte": 600,
+      page: 1,
     }),
+    tmdb<List<any>>("/discover/movie", {
+      "primary_release_date.lte": "1985-12-31",
+      sort_by: "vote_average.desc",
+      "vote_count.gte": 300,
+      page: 2,
+    }).catch(() => ({ results: [] })),
     tmdb<List<any>>("/movie/popular", { page: 1 }),
+    tmdb<List<any>>("/movie/popular", { page: 2 }).catch(() => ({ results: [] })),
     tmdb<List<any>>("/discover/movie", {
       with_original_language: "ta",
       sort_by: "popularity.desc",
-      "vote_count.gte": 25,
+      "vote_count.gte": 15,
       region: "IN",
       page: 1,
     }),
+    tmdb<List<any>>("/discover/movie", {
+      with_original_language: "ta",
+      sort_by: "vote_average.desc",
+      "vote_count.gte": 20,
+      region: "IN",
+      page: 1,
+    }).catch(() => ({ results: [] })),
   ]);
 
   // 1. Multi-Hero: Dynamic cross-archive rotation from trending, top-rated, classics & Indian landmarks
@@ -139,15 +175,20 @@ export const getHome = defineApi({ method: "GET" }).handler(async (): Promise<{
       director: m.credits?.crew?.find((c: any) => c.job === "Director")?.name ?? "—",
     }));
 
-  // 4. Featured Auteurs Pool (Preloads 5 diverse auteurs across world traditions)
-  const shuffledAuteurs = [...AUTEUR_SPOTLIGHT].sort(() => Math.random() - 0.5).slice(0, 5);
+  // 4. Featured Auteurs Pool (Preloads Rishab Shetty + diverse auteurs across world traditions)
+  const rishabSeed = AUTEUR_SPOTLIGHT.find((a) => a.id === 1752058);
+  const otherAuteurs = AUTEUR_SPOTLIGHT.filter((a) => a.id !== 1752058).sort(() => Math.random() - 0.5);
+  const selectedSeeds = rishabSeed ? [rishabSeed, ...otherAuteurs.slice(0, 5)] : otherAuteurs.slice(0, 6);
+
   const featuredAuteurs: AuteurCard[] = (
     await Promise.all(
-      shuffledAuteurs.map(async (seed) => {
+      selectedSeeds.map(async (seed) => {
         try {
           const p = await tmdb<any>(`/person/${seed.id}`, { append_to_response: "movie_credits" });
-          const crew = (p.movie_credits?.crew ?? []).filter((c: any) => c.job === "Director");
-          const topFilms = uniqueMovies(crew)
+          const directed = (p.movie_credits?.crew ?? []).filter((c: any) => c.job === "Director");
+          const allCredits = [...directed, ...(p.movie_credits?.cast ?? [])];
+          const candidateCredits = directed.length >= 4 ? directed : allCredits;
+          const topFilms = uniqueMovies(candidateCredits)
             .sort((a: any, b: any) => (b.vote_count ?? 0) - (a.vote_count ?? 0))
             .slice(0, 4)
             .map(mapMovie);
@@ -282,31 +323,31 @@ export const getHome = defineApi({ method: "GET" }).handler(async (): Promise<{
       key: "now",
       title: "In projection now",
       subtitle: "Playing in theatres this week",
-      items: uniqueMappedMovies(nowPlaying.results).slice(0, 12),
+      items: prioritizeWithPosters([...(nowPlaying.results || []), ...(nowPlayingP2.results || [])], 18),
     },
     {
       key: "long-take",
       title: "The Long Take",
-      subtitle: "The highest-rated films in the archive",
-      items: uniqueMappedMovies(topRated.results).slice(0, 12),
+      subtitle: "Highest-rated and classic films in discussion",
+      items: prioritizeWithPosters([...(topRated.results || []), ...(topRatedP2.results || [])], 18),
     },
     {
       key: "restored",
       title: "Restored & Rediscovered",
       subtitle: "Pre-1985, cared for frame by frame",
-      items: uniqueMappedMovies(classics.results).slice(0, 12),
+      items: prioritizeWithPosters([...(classics.results || []), ...(classicsP2.results || [])], 18),
     },
     {
       key: "popular",
       title: "What members are watching",
       subtitle: "Most logged films right now",
-      items: uniqueMappedMovies(popular.results).slice(0, 12),
+      items: prioritizeWithPosters([...(popular.results || []), ...(popularP2.results || [])], 18),
     },
     {
       key: "tamil",
       title: "Tamil cinema",
       subtitle: "Stories from Tamil film",
-      items: uniqueMappedMovies(tamil.results).slice(0, 12),
+      items: prioritizeWithPosters([...(tamil.results || []), ...(tamilP2.results || [])], 18),
     },
   ];
 

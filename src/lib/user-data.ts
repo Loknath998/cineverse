@@ -14,6 +14,13 @@ import { supabase } from "./supabase";
 export type FetchResult = { ok: true; data: unknown | null } | { ok: false; error: string };
 export type SaveResult = { ok: true } | { ok: false; error: string };
 
+function sanitizeErrorMessage(msg: string): string {
+  if (msg.toLowerCase().includes("permission denied for table user_data")) {
+    return "Supabase permission denied: run the updated supabase/schema.sql in your Supabase SQL editor to GRANT table access.";
+  }
+  return msg;
+}
+
 export async function fetchUserData(userId: string): Promise<FetchResult> {
   if (!supabase) return { ok: false, error: "Supabase is not configured." };
   try {
@@ -24,12 +31,13 @@ export async function fetchUserData(userId: string): Promise<FetchResult> {
       .maybeSingle();
 
     if (error) {
-      console.error("[CineVerse] Failed to load synced data:", error.message);
-      return { ok: false, error: error.message };
+      const cleanMsg = sanitizeErrorMessage(error.message);
+      console.error("[CineVerse] Failed to load synced data:", cleanMsg);
+      return { ok: false, error: cleanMsg };
     }
     return { ok: true, data: data?.data ?? null };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error while loading synced data.";
+    const message = err instanceof Error ? sanitizeErrorMessage(err.message) : "Unknown error while loading synced data.";
     console.error("[CineVerse] Failed to load synced data:", message);
     return { ok: false, error: message };
   }
@@ -43,12 +51,13 @@ export async function saveUserData(userId: string, data: unknown): Promise<SaveR
       .upsert({ user_id: userId, data, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
 
     if (error) {
-      console.error("[CineVerse] Failed to sync data:", error.message);
-      return { ok: false, error: error.message };
+      const cleanMsg = sanitizeErrorMessage(error.message);
+      console.error("[CineVerse] Failed to sync data:", cleanMsg);
+      return { ok: false, error: cleanMsg };
     }
     return { ok: true };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error while syncing data.";
+    const message = err instanceof Error ? sanitizeErrorMessage(err.message) : "Unknown error while syncing data.";
     console.error("[CineVerse] Failed to sync data:", message);
     return { ok: false, error: message };
   }

@@ -1,6 +1,6 @@
 import { createRoute } from "../lib/route";
 import { Link } from "../lib/router";
-import { useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -14,6 +14,7 @@ import {
 
 import { MovieActions } from "../components/site/movie-actions";
 import { PosterRail } from "../components/site/media";
+import { tmdb } from "../lib/tmdb";
 import { getMovie } from "../lib/tmdb.api";
 import { fmtMoney, fmtRuntime } from "../lib/tmdb-map";
 import { useLibrary } from "../lib/library";
@@ -55,6 +56,41 @@ export const Route = createRoute({
 function MoviePage() {
   const m = Route.useLoaderData() as Awaited<ReturnType<typeof getMovie>>;
   const { watched } = useLibrary();
+
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [logoFailed, setLogoFailed] = useState(false);
+
+  useEffect(() => {
+    if (!m?.id) return;
+    let isMounted = true;
+    setLogoFailed(false);
+    setLogoUrl(null);
+
+    tmdb<{ logos?: { file_path: string; iso_639_1: string | null }[] }>(
+      `/movie/${m.id}/images`,
+      { include_image_language: "en,null" }
+    )
+      .then((data) => {
+        if (!isMounted) return;
+        const logos = data?.logos || [];
+        const enLogo =
+          logos.find((l) => l.iso_639_1 === "en") ||
+          logos.find((l) => !l.iso_639_1);
+
+        if (enLogo?.file_path) {
+          setLogoUrl(`https://image.tmdb.org/t/p/w500${enLogo.file_path}`);
+        } else {
+          setLogoUrl(null);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setLogoUrl(null);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [m?.id]);
 
   const watchedIds = useMemo(() => new Set(watched.map((w) => w.id)), [watched]);
 
@@ -176,9 +212,20 @@ function MoviePage() {
             {/* Right: Title, Director, Core Metadata & Direct Synopsis */}
             <div className="space-y-6">
               <div className="space-y-2">
-                <h1 className="font-display text-4xl sm:text-6xl lg:text-7xl text-foreground font-bold tracking-tight leading-[0.95]">
-                  {m.title}
-                </h1>
+                {logoUrl && !logoFailed ? (
+                  <div className="py-2">
+                    <img
+                      src={logoUrl}
+                      alt={m.title}
+                      onError={() => setLogoFailed(true)}
+                      className="max-h-[100px] sm:max-h-[135px] md:max-h-[150px] w-auto max-w-[320px] sm:max-w-[480px] object-contain drop-shadow-[0_4px_20px_rgba(0,0,0,0.85)] filter"
+                    />
+                  </div>
+                ) : (
+                  <h1 className="font-display text-4xl sm:text-6xl lg:text-7xl text-foreground font-bold tracking-tight leading-[0.95]">
+                    {m.title}
+                  </h1>
+                )}
 
                 {m.tagline ? (
                   <p className="font-display text-base sm:text-xl italic text-gold-soft">
